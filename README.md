@@ -1,297 +1,259 @@
-# Docker & GitLab-Runner & CLion
+# Build Images
 
-## Purpose
+Docker-based build infrastructure for C++/Qt and Python projects with multi-platform support, artifact hosting, and
+CI/CD integration.
 
-The purpose of this repository is multiple:
+## Overview
 
-1. Using Docker to run a GitLab runner which uses Docker images to execute jobs.
-2. Create a Docker image for building C++ projects which are uploaded to a self-hosted Sonatype Nexus server.
-3. Building Executables from Python Code.
-4. Enable GitLab runner cache using the S3-API from a self-hosted MinIO server using a Docker image.
-5. Use the Docker image in JetBrain's CLion for checking the image only.
-6. Building the Qt library/framework from source for Linux x86_64, aarch64 and Windows x86_64.
+This repository provides the tooling and Docker images required to build, package, and distribute C++ and Python
+applications across Linux (x86\_64 and aarch64) and Windows (x86\_64). It supports:
 
-## 1) GitLab-Runner via Docker
+- **C++ builds** with native and cross-compilation toolchains (GCC, MinGW, MSVC via Wine).
+- **Qt framework** built from source for multiple platforms and architectures.
+- **Python executable packaging** with Wine support for Windows targets.
+- **Self-hosted artifact storage** using Sonatype Nexus (Docker registry and raw files) and MinIO (S3-compatible object
+  storage).
+- **CI/CD integration** with GitLab Runner and Docker Model Runner for local AI models.
 
-Running GitLab provided Docker image (`gitlab/gitlab-runner:latest`) for running a runner.  
-A script [`gitlab-runner.sh`](gitlab-runner.sh "Link to the script.") is provided to execute it.
+## Components
 
-## 2) Create Docker C++ Build Image & Hosted on a Nexus Docker Registry
+### C++ Build Environment
 
-### Primary Goal
+The primary build image (`gnu-cpp`) is based on Ubuntu 24.04 and includes:
 
-Create a comprehensive Docker-based C++ build environment that supports:
+| Category      | Tools                                                              |
+|---------------|--------------------------------------------------------------------|
+| Compilers     | GCC, G++, MinGW (cross-compile to Windows), aarch64 cross-compiler |
+| Build systems | CMake, Ninja, GNU Make                                             |
+| Debugging     | GDB, GDBserver, Valgrind                                           |
+| Code quality  | Clang-Format, Doxygen, Graphviz, Gcovr                             |
+| Packaging     | CPack, dpkg, RPM, NSIS                                             |
+| Runtime       | Wine (Windows emulation), Python 3, OpenJDK                        |
+| Utilities     | Git, SSH, bindfs, fuse-zip, jq, ccache                             |
 
-1. **Multi-platform C++ compilation**
-	- Native Linux (x86_64 and aarch64)
-	- Windows cross-compilation (x86_64) using the Linux MinGW cross-compiler
-	- Windows compilation (using MinGW and MSVC via Wine)
+**Dockerfiles:**
 
-2. **Qt framework support**
-	- Building Qt from source for multiple platforms
-	- Packaging and hosting Qt libraries (versions like 6.8.1, 6.9.1, 6.10.1) for different architectures
-	- Cross-platform Qt development (Linux → Windows)
+| File                        | Purpose                                       |
+|-----------------------------|-----------------------------------------------|
+| `builder/cpp.Dockerfile`    | Base C++ build image with toolchains and Wine |
+| `builder/qt.Dockerfile`     | Adds Qt libraries to the base image           |
+| `builder/python.Dockerfile` | Standalone Python build image with Wine       |
+| `sshd/sshd.Dockerfile`      | Minimal SSH server container                  |
 
-3. **Developer tooling**
-	- JetBrains CLion integration for containerized development
-	- Support for debugging and running GUI applications via X11
-	- The Python tool is available in native Linux and also in Wine to support cross-platform build-scripts.
-
-### Key Technical Features
-
-- **Base image**: Ubuntu 24.04 LTS with comprehensive C++ toolchain
-- **Cross-compilation**: aarch64 and Windows (x86_64) support from x86_64 hosts
-- **Wine integration**: For Windows tooling, MSVC and MinGW compilation on Linux
-- **Library management**: Automated packaging/uploading of Qt libraries to Nexus
-- **Entrypoint**: Sophisticated user/permission handling to match host UID/GID
-- **FUSE mounting**: Zip-mounted libraries and toolchains for space efficiency
-
-The system enables consistent, reproducible C++ builds across platforms while maintaining developer workflow
-flexibility.
-
-### Python Build Script
-
-The `bin/build.py` script from the [**CMake Library**](https://git.scanframe.com/library/cmake-lib/-/branches)
-is responsible for automating the build process of C++ projects using CMake.  
-The script provides a bootstrap option for creating a new C++ boilerplate project.
-It provides a convenient interface for developers to execute build commands.  
-The same script can be used for both Linux and Windows, including CI/CD-pipelines.  
-See the Python script in action see the [YouTube](https://www.youtube.com/@Scanframe) channel.
-
-> Good chance the `main` branch is not up to date and use a `dev` or `fix` branch.
-
-### Image Content
-
-To build C++ projects using a Docker image the next Docker configuration is used
-[`Dockerfile`](builder/cpp.Dockerfile "Link to the docker file.").
-
-Applications within the Docker image to C++ projects are:
-
-* Ubuntu LTS
-* Git
-* GCC
-* C++
-* Arch64 GCC
-* Arch64 C++
-* MinGW GCC
-* MinGW C++
-* CMake
-* CTest
-* CPack
-* GNU-Make
-* Ninja-Build
-* CLang-Format
-* Gdb
-* GNU-Linker
-* DoxyGen
-* Graphviz
-* Exif-Tool
-* Dpkg
-* RPM
-* OpenJDK
-* BindFS
-* Fuse-ZIP
-* JQ
-* Gcovr
-* Python3 (Linux + Windows)
-* SSH
-* Wine
-* Qt Framework (optional using `--qt-ver '6.10.1'` or leave empty for none.)
-
-To create the image and upload it to the Sonatype Nexus server's Docker V2 registry, the
-script [cpp-builder.sh](cpp-builder.sh)
-is used to handle it.
-
-For Linux the order of the steps is:
-
-1. Optionally, set a fixed timestamp for downloads to be cached for a next build.  
-	 `./cpp-builder.sh timestamp`.
-2. Pull the base image from DockerHub.  
-	 `./cpp-builder.sh base-pull`.
-3. Push the base image to the Nexus Docker registry.  
-	 `./cpp-builder.sh base-push`.
-4. Build the image to build a Linux Qt version with.  
-	 `./cpp-builder.sh --qt-ver '' build`.
-5. Build the image to build projects using the specified Qt version (`<qt-ver>`).  
-	 `./cpp-builder.sh --qt-ver '<qt-ver>' build`.  
-	 This step requires the Qt-version zipped library to be uploaded or present on the Nexus shared storage.
-6. Push the image to the Nexus Docker registry.  
-	 `./cpp-builder.sh --qt-ver '<qt-ver>' push`.
-7. Push the image to Docker Hub registry.  
-	 `./cpp-builder.sh --qt-ver '<qt-ver>' docker-push`.
-8. Make the image get the latest tag on Docker Hub.  
-	 `./cpp-builder.sh --qt-ver '<qt-ver>' docker-latest`.
-
-> For the **aarch64** version the same steps are performed on a Raspberry Pi 5 or an **aarch64** image running on an *
-> *x86_64** machine using **qemu**.  
-> The **aarch64** image can only build QT targets for **aarch64** as where the **x86_64** one does all 3.
-
-The zip-files are locally stored in the Nexus repository having the following directory structure:
-
-```text
-<file-server>/library/qt/
-├── lnx-aarch64
-│   ├── 6.8.1
-│   │   └── gcc_64
-│   └── 6.10.1
-│       └── gcc_64
-├── lnx-x86_64
-│   ├── 6.8.1
-│   │   └── gcc_64
-│   └── 6.10.1
-│       └── gcc_64
-├── w64-x86_64
-│   ├── 6.8.1
-│   │   └── mingw_64
-│   └── 6.10.1
-│       └── mingw_64
-└── win-x86_64
-    ├── 6.8.1
-    │   └── mingw_64
-    └── 6.10.1
-        └── mingw_64
-```
-
-To create the Qt-version zip-files for the Nexus shared storage, the following script commands ar used:
-> The `--platform` flag is optional and defaults to `amd64` on an `x86_64` machine.
-
-* `./cpp-builder.sh --platform qt-lnx`
-* `./cpp-builder.sh --platform arm64 qt-lnx`
-* `./cpp-builder.sh qt-win`
-* `./cpp-builder.sh qt-w64`
-
-Upload the created zip-files to the Nexus shared storage.
-
-* `./cpp-builder.sh --platform qt-lnx-up`
-* `./cpp-builder.sh --platform arm64 qt-lnx-up`
-* `./cpp-builder.sh qt-win-up`
-* `./cpp-builder.sh qt-w64-up`
-
-## 3) Building Executables from Python Code
-
-Command line examples for building executables of a Python project containing executable `*.py` files.
-
-```shell
-./py-builder.sh --project ../../pysrc/dev-tools run -- wine venv-setup.cmd mk-exec.cmd nexus-docker.py
-./py-builder.sh --project ../../pysrc/dev-tools run -- ./venv-setup.sh ./mk-exec.sh nexus-docker.py
-```
-
-## 4) Enable GitLab Runner Cache using a MinIO Server
-
-Set up MinIO server using a docker image named (`minio/minio:latest`) and for the controlling
-the server from the command line the image (`minio/mc:latest`).  
-For easy usage and set up the script [minio.sh](minio.sh "Link to the script.") is used.
-
-## 5) CLion Using Docker the Image
-
-To have CLion compile CMake projects using Qt arguments passed to the Docker `run` command need to be
-changed to have the original [entrypoint](builder/bin/entrypoint.sh) to execute the command.
-CLion Docker command-line arguments: `--rm --privileged --user 0:0 --env USER_LOCAL="<uid>:<gid>"`
-where **uid** and **gid** is the current users user and group id.
-Debugging is not possible since the intermediate `entrypoint.sh` script prevents this.
-Running a console application is possible from CLion.  
-Running GUI applications, the X11 socket needs to be configured with additional run options  
-`--env DISPLAY --volume "${HOME}/.Xauthority:/home/user/.Xauthority:ro"`.
-CLion does not do variable expansion for Docker command line arguments, so expand them manually.
-
-## 6) Building the Qt Library/Framework from Source
-
-Shell script `build-qt-lib.sh` is for building the framework libraries for Linux and for Windows
-using multiple command steps:
-
-1. Pulling a Git-tagged version of the Qt source.
-2. Initializing the Git-submodules.
-3. Installing the dependent libraries for Linux or dependent applications for Windows.
-4. Configuring the cmake files for parts that are only needed to build.
-5. Fix the cmake cache file when needed and configure again.
-6. Installing the libraries into the correct named Qt version directory for projects.
-7. Zipping the version for mounting in a Qt-versioned Docker Qt build container.
-
-See also the [Qt from source](doc/qt-from-source.md) document.
-
-::include{file=doc/cpp-builder-process.puml}
-
-## Preparations
-
-### Windows
-
-To run the `build-qt-lib.sh` script Cygwin is required.  
-Install **Cygwin** with the following command.
-
-```shell
-powershell -Command "Invoke-Expression(Invoke-WebRequest -Uri 'https://git.scanframe.com/shared/bin-bash/-/raw/master/install-cygwin.ps1' -UseBasicParsing).Content"
-```
-
-Download the toolchains to a local directory, since mounted drives are not working.
-On the **Nexus** [repository](https://nexus.scanframe.com/#browse/browse:shared:library%2Ftoolchain) you find two,
-Mingw-w64 and MSVC.
-
-The `build-qt-lib.sh` requires the location of the toolchains and is provided using environment variable modification
-files, and CMake finds the correct executable that way.
-
-The format of the filename in the root of the project is `.toolhcain-<compiler>-<hostname>` where `<compiler>` is
-`mingw` or `msvc` and `<hostname>`.
-
-#### Example file of a MinGW64 Compiler
-
-Filename: `.toolchain-mingw-vm-windev`
+**Build script:** [`cpp-builder.sh`](cpp-builder.sh)
 
 ```bash
-# Prepend the environment variable PATH with the toolchain binary directory.
-PATH=C:\toolchain\w64-x86_64-mingw-1320-posix\bin;${PATH}
+# Build the base image without Qt
+./cpp-builder.sh --qt-ver '' build
+
+# Build the image with a specific Qt version
+./cpp-builder.sh --qt-ver '6.10.1' build
+
+# Push to Nexus registry
+./cpp-builder.sh --qt-ver '6.10.1' push
+
+# Run the container with X11 forwarding
+./cpp-builder.sh --project /path/to/project runx
 ```
 
-#### Example file for MSVC 2022 or MSVC 2026 Compiler
+### Python Build Environment
 
-Filename: `.toolchain-msvc-vm-windev`
+Builds Python executables for Linux and Windows (via Wine).
+
+**Build script:** [`py-builder.sh`](py-builder.sh)
 
 ```bash
-# MSVC toolchain required environment variables.
+# Build the Python image
+./py-builder.sh build
 
-# HOME is standard not present in Windows.
-#HOME=${HOMEDRIVE}${HOMEPATH}
-
-# MSVC version and Windows SDK version 2022.
-MSVC_ROOT=C:\toolchain\w64-x86_64-msvc-2022
-
-VCToolsVersion=14.44.35207
-WindowsSDKVersion=10.0.26100.0
-
-# MSVC version and Windows SDK version 2026.
-#MSVC_ROOT=P:\toolchain\w64-x86_64-msvc-2026
-#VCToolsVersion=14.50.35717
-#WindowsSDKVersion=10.0.26100.0
-
-# Host and target architecture.
-VSCMD_ARG_HOST_ARCH=x64
-VSCMD_ARG_TGT_ARCH=x64
-
-# Set the environment variables.
-VCToolsInstallDir=${MSVC_ROOT}\VC\Tools\MSVC\${VCToolsVersion}
-WindowsSdkBinPath=${MSVC_ROOT}\Windows Kits\10\bin
-
-# Prepend the Windows SDK bin path to the PATH variable
-PATH=${MSVC_ROOT}\VC\Tools\MSVC\${VCToolsVersion}\bin\Hostx64\x64;${MSVC_ROOT}\Windows Kits\10\bin\${WindowsSDKVersion}\x64;${MSVC_ROOT}\Windows Kits\10\bin\${WindowsSDKVersion}\x64\ucrt;${PATH}
-INCLUDE=${MSVC_ROOT}\VC\Tools\MSVC\${VCToolsVersion}\include;${MSVC_ROOT}\VC\Tools\MSVC\${VCToolsVersion}\atlmfc\include;${MSVC_ROOT}\Windows Kits\10\Include\${WindowsSDKVersion}\ucrt;${MSVC_ROOT}\Windows Kits\10\Include\${WindowsSDKVersion}\shared;${MSVC_ROOT}\Windows Kits\10\Include\${WindowsSDKVersion}\um;${MSVC_ROOT}\Windows Kits\10\Include\${WindowsSDKVersion}\winrt;${MSVC_ROOT}\Windows Kits\10\Include\${WindowsSDKVersion}\cppwinrt
-LIB=${MSVC_ROOT}\VC\Tools\MSVC\${VCToolsVersion}\lib\x64;${MSVC_ROOT}\VC\Tools\MSVC\${VCToolsVersion}\atlmfc\lib\x64;${MSVC_ROOT}\Windows Kits\10\Lib\${WindowsSDKVersion}\ucrt\x64;${MSVC_ROOT}\Windows Kits\10\Lib\${WindowsSDKVersion}\um\x64
+# Run a Python project inside the container
+./py-builder.sh --project /path/to/project run -- ./script.py
 ```
 
-### Library Install Location
+### Qt Framework from Source
 
-The library or framework install-directory is also provided by a file containing a directory.  
-The file is formatted with `.install-dir-<hostname>`.
+Builds the Qt framework for multiple platforms and architectures.
 
-#### Example file
+**Build scripts:**
+
+| Script                                 | Language | Purpose                                                                       |
+|----------------------------------------|----------|-------------------------------------------------------------------------------|
+| [`build-qt-lib.sh`](build-qt-lib.sh)   | Bash     | Step-by-step Qt build workflow (deps, clone, init, conf, build, install, zip) |
+| [`build-qt-lib.py`](build-qt-lib.py)   | Python   | INI-configured Qt build with Docker and Wine support                          |
+| [`build-qt-lib.ini`](build-qt-lib.ini) | INI      | Configuration for compilers, features, and modules                            |
+
+**Qt library directory structure:**
 
 ```
-/cygdrive/s/applications/library/qt
+lib/qt
+├── lnx-aarch64/6.10.1/gcc_64
+├── lnx-x86_64/6.10.1/gcc_64
+├── w64-x86_64/6.10.1/
+│   ├── mingw_64
+│   └── msvc_64
+└── win-x86_64/6.10.1/mingw_64
 ```
 
+**Build steps:**
 
+```bash
+# 1. Build the base C++ image without Qt
+./cpp-builder.sh --qt-ver '' build
 
+# 2. Start the container and build Qt inside it
+./build-qt-lib.sh start
+./build-qt-lib.sh attach
 
+# Inside the container:
+./build.sh deps
+./build.sh clone
+./build.sh init
+./build.sh conf
+./build.sh fix
+./build.sh build
+./build.sh install
+./build.sh zip
 
+# 3. Package and upload the Qt libraries
+./cpp-builder.sh qt-lnx
+./cpp-builder.sh qt-lnx-up
 
+# 4. Build the final image with Qt
+./cpp-builder.sh --qt-ver '6.10.1' build
+```
 
+See also: [Building the Qt Library from Source](doc/qt-from-source.md)
 
+### Artifact Storage
 
+#### Sonatype Nexus
+
+Self-hosted registry for Docker images and raw file storage (Qt libraries, toolchains, Wine registry files).
+
+**Script:** [`nexus-docker.sh`](nexus-docker.sh)
+
+```bash
+# Login to Nexus Docker registry
+./nexus-docker.sh login
+
+# List images on Nexus
+./nexus-docker.sh list
+
+# Upload compressed Wine registry
+./nexus-docker.sh wine-reg-up
+```
+
+**Credentials:** `.nexus-credentials` (not tracked by Git, template: `tpl.nexus-credentials`)
+
+#### MinIO
+
+S3-compatible object storage used for GitLab Runner cache.
+
+**Script:** [`minio.sh`](minio.sh)
+
+```bash
+# Start the MinIO server
+./minio.sh start
+
+# Use the MinIO CLI
+./minio.sh mc -- ls -r vps/my-bucket
+```
+
+**Credentials:** `.minio-credentials` (not tracked by Git, template: `tpl.minio-credentials`)
+
+### SSH Server Container
+
+A lightweight container running `sshd` on port 3022 for remote access to build environments.
+
+**Script:** [`sshd.sh`](sshd.sh)
+
+```bash
+./sshd.sh start
+./sshd.sh stop
+```
+
+### Docker Model Runner
+
+Runs local AI/LLM models using the Docker Model Runner plugin.
+
+**Script:** [`dmr.sh`](dmr.sh)
+
+```bash
+# Install dependencies and start the model runner
+./dmr.sh deps
+./dmr.sh start
+
+# Test the API
+./dmr.sh test
+```
+
+### Utility Scripts
+
+| Script                                                 | Purpose                                                     |
+|--------------------------------------------------------|-------------------------------------------------------------|
+| [`build-gcc.sh`](build-gcc.sh)                         | Build GCC from source (download, configure, build, install) |
+| [`ubuntu.sh`](ubuntu.sh)                               | Run a generic Ubuntu 24.04 container with X11 support       |
+| [`test-nexus-docker-reg.sh`](test-nexus-docker-reg.sh) | Inspect and manage Docker images on Nexus                   |
+| [`test-sync_nexus.sh`](test-sync_nexus.sh)             | Sync artifacts between Nexus instances                      |
+
+### Supporting Files
+
+| Path                        | Purpose                                                                                |
+|-----------------------------|----------------------------------------------------------------------------------------|
+| `builder/bin/entrypoint.sh` | Container entrypoint — handles user UID/GID mapping, Wine prefix, and library mounting |
+| `builder/bin/versions.sh`   | Prints installed tool versions inside the container                                    |
+| `builder/apt-repo-gpg/`     | GPG keys for the Nexus APT repository                                                  |
+| `builder/wine-reg/`         | Wine registry files for Windows emulation                                              |
+| `builder/debian-pkgs/`      | Custom Debian packages (e.g., clang-format fix)                                        |
+| `inc/`                      | Shared shell library functions                                                         |
+| `project/`                  | Mount point for project source code                                                    |
+| `minio/`                    | MinIO server configuration and data directories                                        |
+
+## Configuration
+
+### Credentials
+
+Two credential files are required (not tracked by Git):
+
+| File                 | Purpose                                      | Template                |
+|----------------------|----------------------------------------------|-------------------------|
+| `.nexus-credentials` | Nexus server URL, user, and password         | `tpl.nexus-credentials` |
+| `.minio-credentials` | MinIO server URL, access key, and secret key | `tpl.minio-credentials` |
+
+Copy the template and fill in the values:
+
+```bash
+cp tpl.nexus-credentials .nexus-credentials
+cp tpl.minio-credentials .minio-credentials
+```
+
+### CLion Integration
+
+The C++ build image can be used with JetBrains CLion for containerized development.
+
+**Docker run arguments:**
+
+```
+--rm --privileged --user 0:0 --env USER_LOCAL="<uid>:<gid>"
+```
+
+For GUI applications, add X11 forwarding:
+
+```
+--env DISPLAY --volume "${HOME}/.Xauthority:/home/user/.Xauthority:ro"
+```
+
+> Debugging is not supported due to the entrypoint script. Console applications run normally.
+
+## Architecture Support
+
+| Host    | Native Builds | Cross-Compilation                           |
+|---------|---------------|---------------------------------------------|
+| x86\_64 | Linux x86\_64 | Linux aarch64, Windows x86\_64 (MinGW/MSVC) |
+| aarch64 | Linux aarch64 | Linux aarch64 only                          |
+
+## Documentation
+
+- [Building the Qt Library from Source](doc/qt-from-source.md) — detailed Qt build guide
+- [Semantic Versioning](doc/semantic-versioning.md) — commit message format and version bumping rules
+- [Build Process Diagram](doc/cpp-builder-process.puml) — PlantUML diagram of the C++ build workflow
