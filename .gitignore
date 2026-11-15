@@ -15,3 +15,4 @@ minio/config/*
 /test-*
 /qt-lnx
 /.docker-timestamp.txt
+/external

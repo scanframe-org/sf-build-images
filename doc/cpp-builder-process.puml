@@ -8,6 +8,7 @@
 skinparam noteFontColor grey
 skinparam noteBackgroundColor #FFF8E1
 skinparam noteBorderColor #FFAB00
+skinparam titleBackgroundColor #white
 
 
 header
